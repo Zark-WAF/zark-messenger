@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  <!-- Shared Memory -->
+  <rect x="50" y="50" width="700" height="200" fill="#e6f3ff" stroke="#333" stroke-width="2"/>
+  <text x="400" y="80" text-anchor="middle" font-size="20" fill="#333">Shared Memory</text>
+  
+  <!-- Message Slots -->
+  <rect x="100" y="100" width="600" height="100" fill="#fff" stroke="#333" stroke-width="2"/>
+  <text x="400" y="130" text-anchor="middle" font-size="16" fill="#333">Fixed-size Message Slots</text>
+  <rect x="120" y="140" width="80" height="40" fill="#b3d9ff" stroke="#333" stroke-width="1"/>
+  <rect x="210" y="140" width="80" height="40" fill="#b3d9ff" stroke="#333" stroke-width="1"/>
+  <rect x="300" y="140" width="80" height="40" fill="#b3d9ff" stroke="#333" stroke-width="1"/>
+  <text x="550" y="160" text-anchor="middle" font-size="14" fill="#333">...</text>
+  <rect x="600" y="140" width="80" height="40" fill="#b3d9ff" stroke="#333" stroke-width="1"/>
+  
+  <!-- Lock-free Queue -->
+  <rect x="50" y="300" width="700" height="100" fill="#ffe6cc" stroke="#333" stroke-width="2"/>
+  <text x="400" y="330" text-anchor="middle" font-size="20" fill="#333">Lock-free Queue</text>
+  <rect x="100" y="350" width="600" height="30" fill="#fff" stroke="#333" stroke-width="1"/>
+  <circle cx="130" cy="365" r="10" fill="#ff9933"/>
+  <circle cx="170" cy="365" r="10" fill="#ff9933"/>
+  <circle cx="210" cy="365" r="10" fill="#ff9933"/>
+  <text x="550" y="370" text-anchor="middle" font-size="14" fill="#333">...</text>
+  
+  <!-- ZarkMessenger -->
+  <rect x="250" y="450" width="300" height="100" fill="#d9ead3" stroke="#333" stroke-width="2"/>
+  <text x="400" y="480" text-anchor="middle" font-size="20" fill="#333">ZarkMessenger</text>
+  <text x="400" y="510" text-anchor="middle" font-size="16" fill="#333">send() / receive()</text>
+  
+  <!-- FFI Layer -->
+  <rect x="50" y="570" width="700" height="30" fill="#f9cb9c" stroke="#333" stroke-width="2"/>
+  <text x="400" y="590" text-anchor="middle" font-size="16" fill="#333">FFI Layer</text>
+  
+  <!-- Arrows -->
+  <line x1="400" y1="220" x2="400" y2="300" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="400" y1="400" x2="400" y2="450" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="400" y1="550" x2="400" y2="570" stroke="#333" stroke-width="2" marker-end="url(#arrowhead)"/>
+  
+  <!-- Arrowhead definition -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333"/>
+    </marker>
+  </defs>
+</svg>
