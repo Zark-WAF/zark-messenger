@@ -22,11 +22,5 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
-pub mod domain;
-pub mod application;
-pub mod infrastructure;
-pub mod utils;
-
-pub use application::messenger::Messenger;
-pub use application::config::Config;
-pub use domain::errors::MessengerError;
+pub mod transport;
+pub mod serialization;

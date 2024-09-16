@@ -22,8 +22,7 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
-
-use rand::Rng;
+use rand::seq::SliceRandom;
 
 // function to generate a unique identifier for zark-waf
 pub fn generate_zark_uid() -> String {

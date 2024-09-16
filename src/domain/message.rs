@@ -27,9 +27,9 @@ use crate::utils::zark_uid::generate_zark_uid;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-// message struct represents a single message in the messaging system
+/// message struct represents a single message in the messaging system
 pub struct Message {
-    // topic is used to categorize and route messages to appropriate recipients
+    /// topic is used to categorize and route messages to appropriate recipients
     pub topic: String,
     // id is a unique identifier for each message, allowing tracking and deduplication
     pub id: String,
