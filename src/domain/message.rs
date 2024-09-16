@@ -27,14 +27,21 @@ use crate::utils::zark_uid::generate_zark_uid;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// message struct represents a single message in the messaging system
 pub struct Message {
+    // topic is used to categorize and route messages to appropriate recipients
     pub topic: String,
+    // id is a unique identifier for each message, allowing tracking and deduplication
     pub id: String,
+    // payload contains the actual content of the message as a byte vector
     pub payload: Vec<u8>,
 }
 
 impl Message {
+    // new is a constructor method for creating a new message instance
     pub fn new(topic: String, payload: Vec<u8>) -> Self {
+        // create a new message with the given topic and payload
+        // generate a unique id for the message using the zark_uid generator
         Self { topic, id: generate_zark_uid(), payload }
     }
 }

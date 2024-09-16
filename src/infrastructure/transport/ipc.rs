@@ -31,19 +31,22 @@ use crate::domain::errors::MessengerError;
 use super::Transport;
 use crate::application::config::IpcConfig;
 
+// ipc transport struct for inter-process communication
 pub struct IpcTransport {
-    shmem: Arc<Mutex<Shmem>>,
-    queue: Arc<SegQueue<(usize, usize)>>,
-    config: IpcConfig,
-    serializer: Box<dyn Serializer>,
+    shmem: Arc<Mutex<Shmem>>, // shared memory for storing messages
+    queue: Arc<SegQueue<(usize, usize)>>, // queue for tracking message offsets and lengths
+    config: IpcConfig, // configuration for ipc transport
+    serializer: Box<dyn Serializer>, // serializer for converting messages to/from bytes
 }
 
 #[async_trait]
 impl Transport for IpcTransport {
+    // send a message using shared memory
     async fn send(&self, msg: Message) -> Result<(), MessengerError> {
         let serialized = self.serializer.serialize(&msg)?;
         let len = serialized.len();
         
+        // check if message size exceeds the maximum allowed
         if len > self.config.max_message_size {
             return Err(MessengerError::TransportError("Message too large".into()));
         }
@@ -52,12 +55,14 @@ impl Transport for IpcTransport {
         let offset = self.queue.len() * self.config.max_message_size;
         let slice = unsafe { shmem.as_slice_mut() };
 
+        // copy serialized message to shared memory
         slice[offset..offset + len].copy_from_slice(&serialized);
         self.queue.push((offset, len));
 
         Ok(())
     }
 
+    // receive a message from shared memory
     async fn receive(&self) -> Result<Message, MessengerError> {
         if let Some((offset, len)) = self.queue.pop() {
             let shmem = self.shmem.lock().unwrap();
@@ -69,6 +74,7 @@ impl Transport for IpcTransport {
         }
     }
 
+    // clean up shared memory by zeroing out its contents
     fn cleanup(&self) {
         let mut shmem = self.shmem.lock().unwrap();
         let slice = unsafe { shmem.as_slice_mut() };
@@ -77,9 +83,10 @@ impl Transport for IpcTransport {
 }
 
 impl IpcTransport {
+    // create a new ipc transport instance
     pub fn new(config: IpcConfig) -> Result<Self, MessengerError> {
         let shmem = ShmemConf::new()
-        .size(config.max_message_size * 100) // Allow for 100 messages
+        .size(config.max_message_size * 100) // allow for 100 messages
         .os_id(&config.shared_memory_name)
         .create()
         .map_err(|e| MessengerError::TransportError(e.to_string()))?;

@@ -25,19 +25,33 @@
 
 use rand::Rng;
 
+// function to generate a unique identifier for zark-waf
 pub fn generate_zark_uid() -> String {
+    // create a random number generator
     let mut rng = rand::thread_rng();
+    // define the character set for the uid (uppercase letters and numbers)
     let chars: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars().collect();
     
+    // initialize an empty string to store the uid
     let mut uid = String::new();
+    // loop 19 times to create a 19-character uid (including hyphens)
     for i in 0..19 {
         if i > 0 && i % 5 == 0 {
+            // add a hyphen after every 5 characters (except at the start)
             uid.push('-');
         } else {
+            // randomly choose a character from the defined set and add it to the uid
             uid.push(*chars.choose(&mut rng).unwrap());
         }
     }
     
+    // return the generated uid
     uid
 }
 
+// this function is needed to:
+// 1. create unique identifiers for messages in zark-waf
+// 2. ensure that these identifiers are random and hard to predict
+// 3. provide a consistent format for identifiers (4 groups of 5 characters separated by hyphens)
+// 4. allow for easy tracking and referencing of zark-waf components or sessions
+// 5. potentially use in logging, debugging, or tracking specific instances or operations within the waf

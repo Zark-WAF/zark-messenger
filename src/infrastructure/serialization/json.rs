@@ -28,15 +28,18 @@ use crate::domain::message::Message;
 use crate::domain::errors::MessengerError;
 use super::Serializer;
 
+// json serializer implementation
 pub struct JsonSerializer;
 
 #[async_trait]
 impl Serializer for JsonSerializer {
+    // convert message to json bytes
     fn serialize(&self, msg: &Message) -> Result<Vec<u8>, MessengerError> {
         serde_json::to_vec(msg)
             .map_err(|e| MessengerError::SerializationError(e.to_string()))
     }
 
+    // convert json bytes to message
     fn deserialize(&self, data: &[u8]) -> Result<Message, MessengerError> {
         serde_json::from_slice(data)
             .map_err(|e| MessengerError::SerializationError(e.to_string()))

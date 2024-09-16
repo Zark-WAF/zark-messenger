@@ -24,27 +24,44 @@
 
 use serde::{Deserialize, Serialize};
 
+// main configuration struct for the messenger
+// this struct holds all the necessary configuration options for the messenger
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    // specifies which transport type to use (ipc or tcp)
     pub transport_type: TransportType,
+    // configuration for ipc transport, if used
     pub ipc_config: Option<IpcConfig>,
+    // configuration for tcp transport, if used
     pub tcp_config: Option<TcpConfig>,
 }
 
+// enum to represent the available transport types
+// this allows the user to choose between ipc and tcp communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TransportType {
+    // inter-process communication
     IPC,
+    // transmission control protocol
     TCP,
 }
 
+// configuration struct for ipc transport
+// holds specific settings needed for ipc communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IpcConfig {
+    // name of the shared memory segment to be used for ipc
     pub shared_memory_name: String,
+    // maximum size of messages that can be sent via ipc
     pub max_message_size: usize,
 }
 
+// configuration struct for tcp transport
+// holds specific settings needed for tcp communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TcpConfig {
+    // host address for tcp connection
     pub host: String,
+    // port number for tcp connection
     pub port: u16,
 }

@@ -29,9 +29,13 @@ use crate::domain::errors::MessengerError;
 pub mod ipc;
 pub mod tcp;
 
+// transport trait defines the interface for different communication methods
 #[async_trait]
 pub trait Transport: Send + Sync {
+    // send a message asynchronously
     async fn send(&self, msg: Message) -> Result<(), MessengerError>;
+    // receive a message asynchronously
     async fn receive(&self) -> Result<Message, MessengerError>;
+    // perform any necessary cleanup operations
     fn cleanup(&self);
 }
