@@ -26,6 +26,7 @@ use super::Transport;
 use crate::application::config::TcpConfig;
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
+use crate::domain::serializable::Serializable;
 use crate::infrastructure::serialization::Serializer;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -46,27 +47,44 @@ pub struct TcpTransport {
 }
 
 #[async_trait]
+
+
 impl Transport for TcpTransport {
     // send a message over tcp
-    async fn send(&self, msg: Message) -> Result<(), MessengerError> {
-        // serialize the message
-        let serialized = self.serializer.serialize(&msg)?;
-        // get the length of the serialized message
-        let len = serialized.len() as u32;
-        // convert length to big-endian bytes
-        let len_bytes = len.to_be_bytes();
+    async fn send(&self, message: &Message) -> Result<(), MessengerError> {
+        let topic = message.topic.as_bytes();
+        let payload = &message.payload;
 
-        // if we have an active stream
+        // Calculate total message length: 4 bytes for topic length + topic + 4 bytes for payload length + payload
+        let total_len = 4 + topic.len() + 4 + payload.len();
+
+        // Convert total length to big-endian bytes
+        let len_bytes = (total_len as u32).to_be_bytes();
+
+        // If we have an active stream
         if let Some(stream) = &self.stream {
             let mut stream = stream.lock().await;
 
-            // write the length of the message
+            // Write the total message length
             stream.write_all(&len_bytes).await?;
 
-            // write the serialized message
-            stream.write_all(&serialized).await?;
+            // Write the topic length
+            stream
+                .write_all(&(topic.len() as u32).to_be_bytes())
+                .await?;
 
-            // ensure all data is sent
+            // Write the topic
+            stream.write_all(topic).await?;
+
+            // Write the payload length
+            stream
+                .write_all(&(payload.len() as u32).to_be_bytes())
+                .await?;
+
+            // Write the payload
+            stream.write_all(payload).await?;
+
+            // Ensure all data is sent
             stream.flush().await?;
             Ok(())
         } else {
@@ -74,37 +92,67 @@ impl Transport for TcpTransport {
         }
     }
 
+
     // receive a message over tcp
     async fn receive(&self) -> Result<Message, MessengerError> {
-        // if we have an active stream
         if let Some(stream) = &self.stream {
-            // lock the stream
             let mut stream = stream.lock().await;
 
-            // prepare buffer for message length
+            // Read total message length
             let mut len_bytes = [0u8; 4];
-            // read the length of the incoming message
             stream.read_exact(&mut len_bytes).await?;
-            // convert bytes to length
-            let len = u32::from_be_bytes(len_bytes) as usize;
+            let total_len = u32::from_be_bytes(len_bytes) as usize;
 
-            // prepare buffer for the message
-            let mut buffer = vec![0u8; len];
-            // read the message
-            stream.read_exact(&mut buffer).await?;
+            // Read topic length
+            let mut topic_len_bytes = [0u8; 4];
+            stream.read_exact(&mut topic_len_bytes).await?;
+            let topic_len = u32::from_be_bytes(topic_len_bytes) as usize;
 
-            // deserialize and return the message
-            self.serializer.deserialize(&buffer)
+            // Read topic
+            let mut topic_buffer = vec![0u8; topic_len];
+            stream.read_exact(&mut topic_buffer).await?;
+            let topic = String::from_utf8(topic_buffer).map_err(|_| {
+                MessengerError::Deserialization("Invalid UTF-8 in topic".to_string())
+            })?;
+
+            // Read payload length
+            let mut payload_len_bytes = [0u8; 4];
+            stream.read_exact(&mut payload_len_bytes).await?;
+            let payload_len = u32::from_be_bytes(payload_len_bytes) as usize;
+
+            // Read payload
+            let mut payload = vec![0u8; payload_len];
+            stream.read_exact(&mut payload).await?;
+
+            Ok(Message {
+                topic,
+                payload,
+                id: String::new(), // or generate a unique id
+            })
         } else {
-            // return error if not connected
             Err(MessengerError::TransportError("Not connected".into()))
         }
     }
 
     // cleanup function (no-op for tcp)
-    async fn cleanup(&self) {
+  async fn cleanup(&self) -> Result<(), MessengerError> {
         // here is nothing to clean up. this is a memoryless transport and it's the responsibility of the network to clean up after itself.
         // this is a no-op.
+    }
+
+    // check if the transport is ready
+    async fn is_ready(&self) -> bool {
+        true
+    }
+
+    // reconnect to the server
+    async fn reconnect(&self) -> Result<(), MessengerError> {
+        Ok(())
+    }
+
+    // get the max message size
+    fn max_message_size(&self) -> usize {
+        self.config.max_message_size
     }
 }
 
@@ -122,6 +170,24 @@ impl TcpTransport {
         Ok(Self {
             listener: Some(Arc::new(listener)),
             stream: None,
+            config,
+            serializer,
+        })
+    }
+
+    // create a new tcp client
+    pub async fn new_client(
+        config: TcpConfig,
+        serializer: Box<dyn Serializer>,
+    ) -> Result<Self, MessengerError> {
+        // create address string from host and port
+        let addr = format!("{}:{}", config.host, config.port);
+        // connect to the server
+        let stream = TcpStream::connect(&addr).await?;
+        // return new TcpTransport instance
+        Ok(Self {
+            listener: None,
+            stream: Some(Arc::new(Mutex::new(stream))),
             config,
             serializer,
         })

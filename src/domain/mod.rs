@@ -24,3 +24,8 @@
 
 pub mod message;
 pub mod errors;
+pub mod rpc_request;
+pub mod rpc_response;
+pub mod topic;
+pub mod serializable;
+

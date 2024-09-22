@@ -30,11 +30,23 @@ pub enum MessengerError {
     TransportError(String),
 
     #[error("Serialization error: {0}")]
-    SerializationError(String),
+    Serialization(String),
+    #[error("Deserialization error: {0}")]
+    Deserialization(String),
 
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
+    #[error("RPC error: {0}")]
+    RpcError(String),
+
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Message too large: actual size {0}, max size {1}")]
+    MessageTooLarge(usize, usize), // (actual_size, max_size)
+
+    #[error("No messages available")]
+    NoMessagesAvailable,
+
 }

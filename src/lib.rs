@@ -25,8 +25,12 @@
 pub mod domain;
 pub mod application;
 pub mod infrastructure;
+pub mod interfaces;
 pub mod utils;
 
-pub use application::messenger::Messenger;
-pub use application::config::Config;
-pub use domain::errors::MessengerError;
+pub use crate::interfaces::ffi::{zark_messenger_init, zark_messenger_send, zark_messenger_cleanup};
+
+pub use crate::application::messenger::Messenger;
+pub use crate::application::config::Config;
+pub use crate::domain::errors::MessengerError;
+

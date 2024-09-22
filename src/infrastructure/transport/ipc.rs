@@ -23,78 +23,123 @@
 // Authors: I. Zeqiri, E. Gjergji
 
 use std::sync::Arc;
-
-use async_trait::async_trait;
-use crossbeam::queue::SegQueue;
-use tokio::sync::RwLock;
 use super::Transport;
 use crate::application::config::IpcConfig;
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
 use crate::infrastructure::serialization::Serializer;
+use crate::infrastructure::memory::pool_allocator::BufferPool;
 
-// ipc transport struct for inter-process communication
-// ipc transport struct for inter-process communication
+use async_trait::async_trait;
+use crossbeam::queue::SegQueue;
+use tokio::sync::RwLock;
+
 pub struct IpcTransport {
-    shmem: RwLock<Vec<u8>>,               // shared memory for storing messages
-    queue: Arc<SegQueue<(usize, usize)>>, // queue for tracking message offsets and lengths
-    config: IpcConfig,                    // configuration for ipc transport
-    serializer: Box<dyn Serializer>,      // serializer for converting messages to/from bytes
+    shmem: RwLock<Vec<u8>>,
+    queue: Arc<SegQueue<(usize, usize)>>,
+    config: IpcConfig,
+    serializer: Box<dyn Serializer>,
+    buffer_pool: BufferPool,
 }
 
 #[async_trait]
 impl Transport for IpcTransport {
-    // send a message using shared memory
-    async fn send(&self, msg: Message) -> Result<(), MessengerError> {
-        let serialized = self.serializer.serialize(&msg)?;
-        let len = serialized.len();
 
-        // check if message size exceeds the maximum allowed
-        if len > self.config.max_message_size {
-            return Err(MessengerError::TransportError("Message too large".into()));
+
+    async fn send(&self, message: &Message) -> Result<(), MessengerError> {
+        let topic = message.topic.as_bytes();
+        let payload = &message.payload;
+
+        let total_len = topic.len() + payload.len() + 8; // 4 bytes for topic length, 4 bytes for payload length
+        let max_message_size = self.max_message_size();
+
+        if total_len > max_message_size {
+            return Err(MessengerError::MessageTooLarge(total_len, max_message_size));
         }
 
-        let mut shmem = self.shmem.write().await; // await the future to get the RwLockWriteGuard
-        let offset = self.queue.len() * self.config.max_message_size;
+        let mut buffer = self.buffer_pool.get().await?;
+        if buffer.len() < total_len {
+            buffer.resize(total_len, 0);
+        }
 
-        // copy serialized message to shared memory
-        shmem[offset..offset + len].copy_from_slice(&serialized);
-        self.queue.push((offset, len));
+        // Write topic length
+        buffer[0..4].copy_from_slice(&(topic.len() as u32).to_le_bytes());
+        // Write topic
+        buffer[4..4 + topic.len()].copy_from_slice(topic);
+        // Write payload length
+        buffer[4 + topic.len()..8 + topic.len()].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        // Write payload
+        buffer[8 + topic.len()..].copy_from_slice(payload);
+
+        let mut shmem = self.shmem.write().await;
+        let offset = self.queue.len() * max_message_size;
+
+        if offset + total_len > shmem.len() {
+            shmem.resize(offset + total_len, 0);
+        }
+
+        shmem[offset..offset + total_len].copy_from_slice(&buffer[..total_len]);
+        self.queue.push((offset, total_len));
+
+        self.buffer_pool.return_buffer(buffer).await;
 
         Ok(())
     }
 
-    // receive a message from shared memory
+
     async fn receive(&self) -> Result<Message, MessengerError> {
         if let Some((offset, len)) = self.queue.pop() {
-            let shmem = self.shmem.read().await; // await the future to get the RwLockReadGuard
-            let slice = shmem.as_slice();
-            let data = slice[offset..offset + len].to_vec();
-            self.serializer.deserialize(&data)
+            let shmem = self.shmem.read().await;
+            let data = shmem[offset..offset + len].to_vec();
+            
+            // Deserialize the data into a Message
+            let topic_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            let topic = data[4..4 + topic_len].to_vec();
+            let payload_len = u32::from_le_bytes([data[4 + topic_len], data[5 + topic_len], data[6 + topic_len], data[7 + topic_len]]) as usize;
+            let payload = data[8 + topic_len..8 + topic_len + payload_len].to_vec();
+
+            Ok(Message {
+                topic: String::from_utf8(topic).map_err(|_| MessengerError::Deserialization("Invalid UTF-8 in topic".to_string()))?,
+                payload,
+                id: String::new(), // or generate a unique id
+            })
         } else {
-            Err(MessengerError::TransportError(
-                "No messages available".into(),
-            ))
+            Err(MessengerError::NoMessagesAvailable)
         }
     }
 
-    // clean up shared memory by zeroing out its contents
-    async fn cleanup(&self) {
+  async fn cleanup(&self) -> Result<(), MessengerError> {
         let mut shmem = self.shmem.write().await;
-        shmem.iter_mut().for_each(|x| *x = 0);
+        shmem.fill(0);
+        while self.queue.pop().is_some() {}
+        Ok(())
+    }
+
+    async fn is_ready(&self) -> bool {
+        true // IPC transport is always ready
+    }
+
+    async fn reconnect(&self) -> Result<(), MessengerError> {
+        Ok(()) // No reconnection needed for IPC
+    }
+
+    fn max_message_size(&self) -> usize {
+        self.config.max_message_size
+    }
+}
+
+impl IpcTransport {
+    pub fn new(config: IpcConfig, serializer: Box<dyn Serializer>, buffer_pool: BufferPool) -> Result<Self, MessengerError> {
+        let shmem_size = config.max_message_size * config.max_queue_size;
+        Ok(Self {
+            shmem: RwLock::new(vec![0; shmem_size]),
+            queue: Arc::new(SegQueue::new()),
+            config,
+            serializer,
+            buffer_pool,
+        })
     }
 }
 
 unsafe impl Send for IpcTransport {}
-
-impl IpcTransport {
-    // create a new ipc transport instance
-    pub fn new(config: IpcConfig, serializer: Box<dyn Serializer>) -> Result<Self, MessengerError> {
-        Ok(Self {
-            shmem: RwLock::new(Vec::new()),
-            queue: Arc::new(SegQueue::new()),
-            config,
-            serializer,
-        })
-    }
-}
+unsafe impl Sync for IpcTransport {}

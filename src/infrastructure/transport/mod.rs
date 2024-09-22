@@ -22,21 +22,34 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
+
+
 use async_trait::async_trait;
-use crate::domain::message::Message;
 use crate::domain::errors::MessengerError;
+use crate::domain::message::Message;
 
 pub mod ipc;
 pub mod tcp;
 
 
-// transport trait defines the interface for different communication methods
+
 #[async_trait]
 pub trait Transport: Send + Sync {
-    // send a message asynchronously
-    async fn send(&self, msg: Message) -> Result<(), MessengerError>;
-    // receive a message asynchronously
+    /// Send a message asynchronously
+    async fn send(&self, message: &Message) -> Result<(), MessengerError>;
+
+    /// Receive a message asynchronously
     async fn receive(&self) -> Result<Message, MessengerError>;
-    // perform any necessary cleanup operations
-    async fn cleanup(&self);
+
+    /// Perform any necessary cleanup operations
+    async fn cleanup(&self) -> Result<(), MessengerError>;
+
+    /// Check if the transport is connected and ready
+    async fn is_ready(&self) -> bool;
+
+    /// Reconnect if the transport is not ready
+    async fn reconnect(&self) -> Result<(), MessengerError>;
+
+    /// Get the maximum message size supported by this transport
+    fn max_message_size(&self) -> usize;
 }

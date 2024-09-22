@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'zark_waf_messenger'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=zark_waf_messenger",
+                    "--package=zark_waf_messenger"
+                ],
+                "filter": {
+                    "name": "zark_waf_messenger",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

@@ -1,17 +1,17 @@
 // MIT License
-// 
+//
 // Copyright (c) 2024 ZARK-WAF
-// 
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in all
 // copies or substantial portions of the Software.
-// 
+//
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 // IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 // FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -22,119 +22,124 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
-// import necessary modules and types
-use std::ffi::{CStr, CString, c_char, c_void};
-use std::sync::Arc;
-use crate::application::messenger::Messenger;
-use crate::application::config::{Config, TransportType};
-use crate::domain::message::Message;
-use crate::infrastructure::transport::{IpcTransport, TcpTransport};
-use crate::infrastructure::serialization::json::JsonSerializer;
+use lazy_static::lazy_static;
+use std::ffi::{c_char, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::runtime::Runtime;
 
+use crate::application::config::{Config, TransportType};
+use crate::application::messenger::{Messenger, MessengerImpl};
+use crate::domain::message::Message;
+use crate::infrastructure::serialization::json::JsonSerializer;
+use crate::infrastructure::transport::ipc::IpcTransport;
+use crate::infrastructure::transport::tcp::TcpTransport;
+use crate::infrastructure::transport::Transport;
+
+lazy_static! {
+    static ref RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
+    static ref MESSENGER_MUTEX: Arc<Mutex<AtomicBool>> = Arc::new(Mutex::new(AtomicBool::new(false)));
+}
 
 #[no_mangle]
-pub extern "C" fn zark_messenger_init(config_json: *const c_char) -> *mut c_void {
-    // initialize the messenger with the provided configuration
-    // this function takes a json string as input and returns a pointer to the messenger
+pub extern "C" fn zark_messenger_init(config: *const Config) -> *mut c_void {
+    let mutex = MESSENGER_MUTEX.clone();
 
-    // convert the c string to a rust string
-    let config_str = unsafe { CStr::from_ptr(config_json).to_str().unwrap() };
-    // parse the json string into a config object
-    let config: Config = serde_json::from_str(config_str).unwrap();
+    if mutex.lock().expect("Failed to acquire lock").load(Ordering::SeqCst) {
+        return std::ptr::null_mut();
+    }
 
-    // create the appropriate transport based on the config
-    let transport: Arc<dyn crate::infrastructure::transport::Transport> = match config.transport_type {
+    mutex.lock().expect("Failed to acquire lock").store(true, Ordering::SeqCst);
+
+    let config = unsafe { &*config };
+
+    let transport: Arc<dyn Transport> = match config.transport_type {
         TransportType::IPC => {
-            // create an ipc transport for inter-process communication
-            let ipc_config = config.ipc_config.unwrap();
-            Arc::new(IpcTransport::new(ipc_config, Box::new(JsonSerializer)).unwrap())
-        },
+            let ipc_config = config.ipc_config.as_ref().expect("IPC config not provided");
+            Arc::new(IpcTransport::new(ipc_config.clone(), Box::new(JsonSerializer))
+                .expect("Failed to create IPC transport"))
+        }
         TransportType::TCP => {
-            // create a tcp transport for network communication
-            let tcp_config = config.tcp_config.unwrap();
-            Arc::new(TcpTransport::new_client(tcp_config, Box::new(JsonSerializer)).unwrap())
-        },
+            let tcp_config = config.tcp_config.as_ref().expect("TCP config not provided");
+            Arc::new(RUNTIME.block_on(async {
+                TcpTransport::new_client(tcp_config.clone(), Box::new(JsonSerializer)).await
+                    .expect("Failed to create TCP transport")
+            }))
+        }
     };
 
-    // create a new messenger with the configured transport
-    let messenger = Box::new(Messenger::new(transport));
-    // convert the box into a raw pointer and return it as a void pointer
+    let messenger: Box<dyn Messenger> = Box::new(MessengerImpl::new(transport));
     Box::into_raw(messenger) as *mut c_void
 }
 
 #[no_mangle]
-pub extern "C" fn zark_messenger_send(messenger: *mut c_void, topic: *const c_char, message: *const c_char) -> bool {
-    // send a message using the messenger
-    // this function takes a messenger pointer, topic, and message as input and returns a boolean indicating success
+pub extern "C" fn zark_messenger_send(messenger: *mut c_void, message: *const Message) -> bool {
+    let messenger = unsafe { &*(messenger as *const dyn Messenger) };
+    let message = unsafe { &*message };
 
-    // convert the void pointer back to a messenger reference
-    let messenger = unsafe { &*(messenger as *const Messenger) };
-    // convert the c strings to rust strings
-    let topic = unsafe { CStr::from_ptr(topic).to_str().unwrap().to_string() };
-    let message = unsafe { CStr::from_ptr(message).to_str().unwrap().as_bytes().to_vec() };
-
-    // create a new tokio runtime and run the send operation asynchronously
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async {
-            messenger.send(topic, message).await.is_ok()
-        })
+    RUNTIME.block_on(async {
+        messenger.publish(&message.topic, &message.payload).await.is_ok()
+    })
 }
 
 #[no_mangle]
-pub extern "C" fn zark_messenger_receive(messenger: *mut c_void, topic: *mut c_char, topic_len: usize, buffer: *mut c_char, buffer_len: usize) -> i32 {
-    // receive a message using the messenger
-    // this function takes a messenger pointer and buffers for topic and message, returning the length of the received message
+pub extern "C" fn zark_messenger_receive(
+    messenger: *mut c_void,
+    topic: *mut c_char,
+    topic_len: usize,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> i32 {
+    let messenger = unsafe { &*(messenger as *const dyn Messenger) };
 
-    // convert the void pointer back to a messenger reference
-    let messenger = unsafe { &*(messenger as *const Messenger) };
+    RUNTIME.block_on(async {
+        let subscriber = match messenger.subscribe(&"".into()).await {
+            Ok(sub) => sub,
+            Err(_) => return -1,
+        };
 
-    // create a new tokio runtime and run the receive operation asynchronously
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async {
-            match messenger.receive().await {
-                Ok(msg) => {
-                    // get the bytes of the topic and payload
-                    let topic_bytes = msg.topic.as_bytes();
-                    let payload_bytes = msg.payload.as_slice();
+        match subscriber.receive().await {
+            Ok(msg) => {
+                let topic_bytes = msg.topic.as_bytes();
+                let payload_bytes = msg.payload.as_slice();
 
-                    // calculate the lengths to copy, ensuring we don't overflow the buffers
-                    let topic_copy_len = std::cmp::min(topic_bytes.len(), topic_len - 1);
-                    let payload_copy_len = std::cmp::min(payload_bytes.len(), buffer_len - 1);
+                let topic_copy_len = std::cmp::min(topic_bytes.len(), topic_len.saturating_sub(1));
+                let payload_copy_len = std::cmp::min(payload_bytes.len(), buffer_len.saturating_sub(1));
 
-                    unsafe {
-                        // copy the topic and payload into the provided buffers
-                        std::ptr::copy_nonoverlapping(topic_bytes.as_ptr(), topic as *mut u8, topic_copy_len);
-                        *topic.add(topic_copy_len) = 0; // null-terminate the topic string
+                unsafe {
+                    std::ptr::copy_nonoverlapping(topic_bytes.as_ptr(), topic as *mut u8, topic_copy_len);
+                    *topic.add(topic_copy_len) = 0;
 
-                        std::ptr::copy_nonoverlapping(payload_bytes.as_ptr(), buffer as *mut u8, payload_copy_len);
-                        *buffer.add(payload_copy_len) = 0; // null-terminate the payload string
-                    }
+                    std::ptr::copy_nonoverlapping(payload_bytes.as_ptr(), buffer as *mut u8, payload_copy_len);
+                    *buffer.add(payload_copy_len) = 0;
+                }
 
-                    // return the length of the copied payload
-                    payload_copy_len as i32
-                },
-                Err(_) => -1, // return -1 to indicate an error
+                payload_copy_len as i32
             }
-        })
+            Err(_) => -1,
+        }
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_cleanup(messenger: *mut c_void) {
-    // perform cleanup operations for the messenger
-    // this function takes a messenger pointer and calls its cleanup method
-
-    let messenger = unsafe { &*(messenger as *const Messenger) };
-    messenger.cleanup();
+    // Perform any necessary cleanup here
+    // For now, this is a no-op
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_free(messenger: *mut c_void) {
-    // free the memory allocated for the messenger
-    // this function takes a messenger pointer and properly drops the messenger object
-
     unsafe {
-        drop(Box::from_raw(messenger as *mut Messenger));
+        let _ = Box::from_raw(messenger as *mut Box<dyn Messenger>);
+    }
+    MESSENGER_MUTEX.lock().expect("Failed to acquire lock").store(false, Ordering::SeqCst);
+}
+
+// Helper function to convert C string to Rust string
+fn c_str_to_rust_string(c_str: *const c_char) -> String {
+    unsafe {
+        std::ffi::CStr::from_ptr(c_str)
+            .to_string_lossy()
+            .into_owned()
     }
 }
