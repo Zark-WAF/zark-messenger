@@ -23,10 +23,10 @@
 // Authors: I. Zeqiri, E. Gjergji
 
 use std::sync::Arc;
-use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use shm::SharedMemory;
+use shared_memory::{Shmem, ShmemConf};
+
 
 pub struct Buffer {
     inner: Arc<BufferInner>,
@@ -35,13 +35,13 @@ pub struct Buffer {
 struct BufferInner {
     ptr: NonNull<u8>,
     size: usize,
-    shm: SharedMemory,
+    shm: Shmem,
     destructor: Option<Box<dyn Fn(*mut u8, usize) + Send + Sync>>,
 }
 
 impl Buffer {
     pub fn new(size: usize) -> Result<Self, std::io::Error> {
-        let shm = SharedMemory::create(size)?;
+        let shm = ShmemConf::new().size(size).create().unwrap();
         let ptr = NonNull::new(shm.as_ptr() as *mut u8).unwrap();
         Ok(Self {
             inner: Arc::new(BufferInner {
@@ -54,7 +54,7 @@ impl Buffer {
     }
 
     pub fn from_existing(name: &str) -> Result<Self, std::io::Error> {
-        let shm = SharedMemory::open(name)?;
+        let shm = ShmemConf::new().flink(name).open().unwrap();
         let ptr = NonNull::new(shm.as_ptr() as *mut u8).unwrap();
         let size = shm.len();
         Ok(Self {

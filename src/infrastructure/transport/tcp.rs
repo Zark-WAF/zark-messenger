@@ -47,8 +47,6 @@ pub struct TcpTransport {
 }
 
 #[async_trait]
-
-
 impl Transport for TcpTransport {
     // send a message over tcp
     async fn send(&self, message: &Message) -> Result<(), MessengerError> {
@@ -138,6 +136,7 @@ impl Transport for TcpTransport {
   async fn cleanup(&self) -> Result<(), MessengerError> {
         // here is nothing to clean up. this is a memoryless transport and it's the responsibility of the network to clean up after itself.
         // this is a no-op.
+        Ok(())
     }
 
     // check if the transport is ready

@@ -28,7 +28,7 @@ use crate::application::config::IpcConfig;
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
 use crate::infrastructure::serialization::Serializer;
-use crate::infrastructure::memory::pool_allocator::BufferPool;
+use crate::infrastructure::memory::pool_allocator::PoolAllocator;
 
 use async_trait::async_trait;
 use crossbeam::queue::SegQueue;
@@ -39,15 +39,14 @@ pub struct IpcTransport {
     queue: Arc<SegQueue<(usize, usize)>>,
     config: IpcConfig,
     serializer: Box<dyn Serializer>,
-    buffer_pool: BufferPool,
+    buffer_pool: PoolAllocator<Vec<u8>>,
 }
 
 #[async_trait]
 impl Transport for IpcTransport {
 
-
     async fn send(&self, message: &Message) -> Result<(), MessengerError> {
-        let topic = message.topic.as_bytes();
+        let topic = message.topic.as_bytes().to_vec();
         let payload = &message.payload;
 
         let total_len = topic.len() + payload.len() + 8; // 4 bytes for topic length, 4 bytes for payload length
@@ -57,19 +56,28 @@ impl Transport for IpcTransport {
             return Err(MessengerError::MessageTooLarge(total_len, max_message_size));
         }
 
-        let mut buffer = self.buffer_pool.get().await?;
-        if buffer.len() < total_len {
-            buffer.resize(total_len, 0);
-        }
+        // Prepare the message in a separate block to limit the lifetime of buffer_ptr
+        let prepared_message = {
+            let mut buffer_ptr = self.buffer_pool.allocate();
+            let buffer = unsafe { buffer_ptr.as_mut() };
 
-        // Write topic length
-        buffer[0..4].copy_from_slice(&(topic.len() as u32).to_le_bytes());
-        // Write topic
-        buffer[4..4 + topic.len()].copy_from_slice(topic);
-        // Write payload length
-        buffer[4 + topic.len()..8 + topic.len()].copy_from_slice(&(payload.len() as u32).to_le_bytes());
-        // Write payload
-        buffer[8 + topic.len()..].copy_from_slice(payload);
+            if buffer.len() < total_len {
+                buffer.resize(total_len, 0);
+            }
+
+            // Write topic length
+            buffer[0..4].copy_from_slice(&(topic.len() as u32).to_le_bytes());
+            // Write topic
+            buffer[4..4 + topic.len()].copy_from_slice(&topic);
+            // Write payload length
+            buffer[4 + topic.len()..8 + topic.len()].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+            // Write payload
+            buffer[8 + topic.len()..].copy_from_slice(payload);
+
+            let prepared = buffer[..total_len].to_vec();
+            self.buffer_pool.deallocate(buffer_ptr);
+            prepared
+        };
 
         let mut shmem = self.shmem.write().await;
         let offset = self.queue.len() * max_message_size;
@@ -78,14 +86,11 @@ impl Transport for IpcTransport {
             shmem.resize(offset + total_len, 0);
         }
 
-        shmem[offset..offset + total_len].copy_from_slice(&buffer[..total_len]);
+        shmem[offset..offset + total_len].copy_from_slice(&prepared_message);
         self.queue.push((offset, total_len));
-
-        self.buffer_pool.return_buffer(buffer).await;
 
         Ok(())
     }
-
 
     async fn receive(&self) -> Result<Message, MessengerError> {
         if let Some((offset, len)) = self.queue.pop() {
@@ -129,7 +134,7 @@ impl Transport for IpcTransport {
 }
 
 impl IpcTransport {
-    pub fn new(config: IpcConfig, serializer: Box<dyn Serializer>, buffer_pool: BufferPool) -> Result<Self, MessengerError> {
+    pub fn new(config: IpcConfig, serializer: Box<dyn Serializer>, buffer_pool: PoolAllocator<Vec<u8>>) -> Result<Self, MessengerError> {
         let shmem_size = config.max_message_size * config.max_queue_size;
         Ok(Self {
             shmem: RwLock::new(vec![0; shmem_size]),

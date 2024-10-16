@@ -23,5 +23,5 @@
 // Authors: I. Zeqiri, E. Gjergji
 
 
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq, Default, Debug)]
 pub struct Topic(pub Vec<u8>);

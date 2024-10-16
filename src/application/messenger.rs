@@ -22,20 +22,22 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use crate::domain::message::Message;
 use crate::domain::errors::MessengerError;
-use crate::domain::topic::Topic;
-use crate::domain::serializable::Serializable;
+use crate::infrastructure::serialization::Serializer;
+use crate::infrastructure::transport::Transport;
 
 
 
 #[async_trait]
 pub trait Messenger: Send + Sync {
-    async fn publish<T: Serializable + Send + Sync>(&self, topic: &Topic, payload: &T) -> Result<(), MessengerError>;
-    async fn subscribe(&self, topic: &Topic) -> Result<Box<dyn MessageSubscriber>, MessengerError>;
-    async fn rpc_call<P: Serializable + Send + Sync, R: Serializable + Send + Sync>(&self, method: &[u8], params: &P) -> Result<R, MessengerError>;
+    async fn publish(&self, topic: String, payload: &Message) -> Result<(), MessengerError>;
+    async fn subscribe(&self, topic: String) -> Result<Box<dyn MessageSubscriber>, MessengerError>;
+    async fn rpc_call(&self, method: &[u8], params: &[u8]) -> Result<Vec<u8>, MessengerError>;
     async fn register_rpc_handler(&self, method: &[u8], handler: Box<dyn RpcHandler>) -> Result<(), MessengerError>;
 }
 
@@ -48,3 +50,36 @@ pub trait MessageSubscriber: Send + Sync {
 pub trait RpcHandler: Send + Sync {
     async fn handle(&self, params: &[u8]) -> Result<Vec<u8>, MessengerError>;
 }
+
+
+//implement messenger
+pub struct MessengerImpl {
+    transport: Arc<dyn Transport>
+}
+
+impl MessengerImpl {
+    pub fn new(transport: Arc<dyn Transport>) -> Self {
+        Self { transport }
+    }
+}
+
+#[async_trait]
+impl Messenger for MessengerImpl {
+    async fn publish(&self, topic: String, msg: &Message) -> Result<(), MessengerError> {
+        let message = Message::new(topic.clone(), msg.payload.clone());
+        self.transport.send(&message).await
+    }
+
+    async fn subscribe(&self, topic: String) -> Result<Box<dyn MessageSubscriber>, MessengerError> {
+        self.subscribe(topic).await
+    }
+
+    async fn rpc_call(&self, method: &[u8], params: &[u8]) -> Result<Vec<u8>, MessengerError> {
+        self.rpc_call(method, params).await
+    }
+    
+    async fn register_rpc_handler(&self, method: &[u8], handler: Box<dyn RpcHandler>) -> Result<(), MessengerError> {
+        self.register_rpc_handler(method, handler).await
+    }
+}
+

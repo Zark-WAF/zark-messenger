@@ -15,6 +15,7 @@ pub use crate::domain::errors::MessengerError;
 pub use crate::application::config::{IpcConfig, TransportType};
 pub use crate::domain::message::Message;
 
+use shared_memory::Shmem;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a Config struct
@@ -22,7 +23,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         transport_type: TransportType::IPC,
         ipc_config: Some(IpcConfig {
             shared_memory_name: "zark_waf_messenger_shm".to_string(),
-            max_message_size: 1024
+            max_message_size: 1024,
+            max_queue_size: 1024,
+            max_buffer_size: 1024,
         }),
         tcp_config: None,
     };

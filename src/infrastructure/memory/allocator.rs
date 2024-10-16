@@ -24,7 +24,6 @@
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::UnsafeCell;
-use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct MemoryAllocator {

@@ -22,5 +22,6 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
+pub mod memory;
 pub mod transport;
 pub mod serialization;

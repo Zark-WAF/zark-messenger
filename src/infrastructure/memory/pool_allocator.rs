@@ -104,14 +104,16 @@ impl<T> Chunk<T> {
 
     fn initialize_free_list(&mut self) {
         let data = self.data.get() as *mut T;
-        for i in 0..63 {
-            let node = data.add(i) as *mut FreeListNode;
+        let num_nodes = 63;
+        for i in 0..num_nodes {
+            let node = unsafe { data.add(i) } as *mut FreeListNode;
+            let next_node = unsafe { data.add(i + 1) } as *mut FreeListNode;
             unsafe {
-                (*node).next = AtomicPtr::new(data.add(i + 1) as *mut FreeListNode);
+                (*node).next = AtomicPtr::new(next_node);
             }
         }
-        let last = unsafe { &mut *(data.add(63) as *mut FreeListNode) };
-        last.next = AtomicPtr::new(std::ptr::null_mut());
+        let last_node = unsafe { &mut *(data.add(num_nodes) as *mut FreeListNode) };
+        last_node.next = AtomicPtr::new(std::ptr::null_mut());
         self.free_list = AtomicPtr::new(data as *mut FreeListNode);
     }
 

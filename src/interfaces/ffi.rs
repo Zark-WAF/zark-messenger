@@ -31,6 +31,7 @@ use tokio::runtime::Runtime;
 use crate::application::config::{Config, TransportType};
 use crate::application::messenger::{Messenger, MessengerImpl};
 use crate::domain::message::Message;
+use crate::infrastructure::memory::pool_allocator::PoolAllocator;
 use crate::infrastructure::serialization::json::JsonSerializer;
 use crate::infrastructure::transport::ipc::IpcTransport;
 use crate::infrastructure::transport::tcp::TcpTransport;
@@ -56,7 +57,7 @@ pub extern "C" fn zark_messenger_init(config: *const Config) -> *mut c_void {
     let transport: Arc<dyn Transport> = match config.transport_type {
         TransportType::IPC => {
             let ipc_config = config.ipc_config.as_ref().expect("IPC config not provided");
-            Arc::new(IpcTransport::new(ipc_config.clone(), Box::new(JsonSerializer))
+            Arc::new(IpcTransport::new(ipc_config.clone(), Box::new(JsonSerializer), PoolAllocator::new(1024 * 1024))
                 .expect("Failed to create IPC transport"))
         }
         TransportType::TCP => {
@@ -70,30 +71,36 @@ pub extern "C" fn zark_messenger_init(config: *const Config) -> *mut c_void {
 
     let messenger: Box<dyn Messenger> = Box::new(MessengerImpl::new(transport));
     Box::into_raw(messenger) as *mut c_void
+
 }
 
 #[no_mangle]
-pub extern "C" fn zark_messenger_send(messenger: *mut c_void, message: *const Message) -> bool {
-    let messenger = unsafe { &*(messenger as *const dyn Messenger) };
+pub extern "C" fn zark_messenger_send(messenger_param: *mut c_void, message: *const Message) -> bool {
+
+    //transmute the messenger to the correct type, it appears only way casting c_void to my local messenger type
+    let messenger = unsafe { &*(messenger_param as *mut MessengerImpl) as &dyn Messenger };
     let message = unsafe { &*message };
 
     RUNTIME.block_on(async {
-        messenger.publish(&message.topic, &message.payload).await.is_ok()
+        unsafe { (*messenger).publish(message.topic.clone(), message).await.is_ok() }
     })
+
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_receive(
-    messenger: *mut c_void,
+    messenger_param: *mut c_void,
     topic: *mut c_char,
     topic_len: usize,
     buffer: *mut c_char,
     buffer_len: usize,
 ) -> i32 {
-    let messenger = unsafe { &*(messenger as *const dyn Messenger) };
+
+    //
+    let messenger = unsafe { &*(messenger_param as *mut MessengerImpl) as &dyn Messenger };
 
     RUNTIME.block_on(async {
-        let subscriber = match messenger.subscribe(&"".into()).await {
+        let subscriber = match messenger.subscribe(c_str_to_rust_string(topic)).await {
             Ok(sub) => sub,
             Err(_) => return -1,
         };

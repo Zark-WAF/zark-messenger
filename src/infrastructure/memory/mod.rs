@@ -23,6 +23,5 @@
 // Authors: I. Zeqiri, E. Gjergji
 
 pub mod buffer;
-pub mod pool;
 pub mod allocator;
 pub mod pool_allocator;
