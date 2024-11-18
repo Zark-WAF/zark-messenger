@@ -27,40 +27,78 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// initializes a new messenger instance
-// name: identifier for the messenger
-// is_tcp: flag to determine if TCP should be used (true) or IPC (false)
-// returns: pointer to the messenger instance or NULL on failure
-void* zark_messenger_init(const char* name, bool is_tcp);
+// Error codes returned by messenger functions
+typedef enum ZarkMessengerError {
+    ZARK_SUCCESS = 0,
+    ZARK_ERROR_INVALID_ARGUMENT = -1,
+    ZARK_ERROR_MEMORY_ALLOCATION = -2,
+    ZARK_ERROR_CONNECTION_FAILED = -3,
+    ZARK_ERROR_SEND_FAILED = -4,
+    ZARK_ERROR_RECEIVE_FAILED = -5,
+    ZARK_ERROR_TIMEOUT = -6,
+    ZARK_ERROR_BUFFER_TOO_SMALL = -7,
+    ZARK_ERROR_INTERNAL = -8,
+    ZARK_ERROR_MESSAGE_TOO_LARGE = -9,
+    ZARK_ERROR_NO_MESSAGES = -10
+} ZarkMessengerError;
 
-// sends a message through the messenger
-// messenger: pointer to the messenger instance
-// topic: the topic/channel for the message
-// message: the content of the message
-// returns: true if the message was sent successfully, false otherwise
-bool zark_messenger_send(void* messenger, const char* topic, const char* message);
+// Configuration for IPC transport
+typedef struct ZarkIpcConfig {
+    const char* shared_memory_name;
+    size_t max_message_size;
+    size_t max_queue_size;
+    size_t max_buffer_size;
+} ZarkIpcConfig;
 
-// receives a message from the messenger
-// messenger: pointer to the messenger instance
-// topic: buffer to store the received topic
-// topic_len: size of the topic buffer
-// buffer: buffer to store the received message
-// buffer_len: size of the message buffer
-// returns: length of the received message, or negative value on error
-int zark_messenger_receive(void* messenger, char* topic, size_t topic_len, char* buffer, size_t buffer_len);
+// Configuration for TCP transport
+typedef struct ZarkTcpConfig {
+    const char* host;
+    uint16_t port;
+    size_t max_message_size;
+} ZarkTcpConfig;
 
-// performs any necessary cleanup operations for the messenger
-// messenger: pointer to the messenger instance
-void zark_messenger_cleanup(void* messenger);
+// Transport type enum
+typedef enum ZarkTransportType {
+    ZARK_TRANSPORT_IPC,
+    ZARK_TRANSPORT_TCP
+} ZarkTransportType;
 
-// frees the memory associated with the messenger instance
-// messenger: pointer to the messenger instance
-void zark_messenger_free(void* messenger);
+// Main configuration structure
+typedef struct ZarkConfig {
+    ZarkTransportType transport_type;
+    ZarkIpcConfig* ipc_config;
+    ZarkTcpConfig* tcp_config;
+} ZarkConfig;
+
+// Opaque pointer to messenger instance
+typedef void* ZarkMessenger;
+
+// Initialize messenger with configuration
+ZarkMessenger* zark_messenger_init(const ZarkConfig* config);
+
+// Send a message
+bool zark_messenger_send(ZarkMessenger* messenger, const struct Message* message);
+
+// Receive a message
+int32_t zark_messenger_receive(
+    ZarkMessenger* messenger,
+    char* topic,
+    size_t topic_len,
+    char* buffer,
+    size_t buffer_len
+);
+
+// Cleanup messenger
+void zark_messenger_cleanup(ZarkMessenger* messenger);
+
+// Free messenger instance
+void zark_messenger_free(ZarkMessenger* messenger);
 
 #ifdef __cplusplus
 }

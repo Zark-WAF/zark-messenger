@@ -39,6 +39,7 @@ pub trait Messenger: Send + Sync {
     async fn subscribe(&self, topic: String) -> Result<Box<dyn MessageSubscriber>, MessengerError>;
     async fn rpc_call(&self, method: &[u8], params: &[u8]) -> Result<Vec<u8>, MessengerError>;
     async fn register_rpc_handler(&self, method: &[u8], handler: Box<dyn RpcHandler>) -> Result<(), MessengerError>;
+    async fn cleanup(&self) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 #[async_trait]
@@ -80,6 +81,11 @@ impl Messenger for MessengerImpl {
     
     async fn register_rpc_handler(&self, method: &[u8], handler: Box<dyn RpcHandler>) -> Result<(), MessengerError> {
         self.register_rpc_handler(method, handler).await
+    }
+
+    async fn cleanup(&self) -> Result<(), Box<dyn std::error::Error>> {
+        // Add your cleanup logic here
+        Ok(())
     }
 }
 

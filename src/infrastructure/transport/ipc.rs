@@ -22,13 +22,13 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
-use std::sync::Arc;
 use super::Transport;
 use crate::application::config::IpcConfig;
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
-use crate::infrastructure::serialization::Serializer;
 use crate::infrastructure::memory::pool_allocator::PoolAllocator;
+use crate::infrastructure::serialization::Serializer;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use crossbeam::queue::SegQueue;
@@ -36,7 +36,7 @@ use tokio::sync::RwLock;
 
 pub struct IpcTransport {
     shmem: RwLock<Vec<u8>>,
-    queue: Arc<SegQueue<(usize, usize)>>,
+    queue: Arc<SegQueue<usize>>,
     config: IpcConfig,
     serializer: Box<dyn Serializer>,
     buffer_pool: PoolAllocator<Vec<u8>>,
@@ -44,76 +44,49 @@ pub struct IpcTransport {
 
 #[async_trait]
 impl Transport for IpcTransport {
-
     async fn send(&self, message: &Message) -> Result<(), MessengerError> {
-        let topic = message.topic.as_bytes().to_vec();
-        let payload = &message.payload;
+        // Serialize the message
+        let serialized_data = self.serializer.serialize(message)
+            .map_err(|e| MessengerError::Serialization(e.to_string()))?;
 
-        let total_len = topic.len() + payload.len() + 8; // 4 bytes for topic length, 4 bytes for payload length
-        let max_message_size = self.max_message_size();
-
-        if total_len > max_message_size {
-            return Err(MessengerError::MessageTooLarge(total_len, max_message_size));
+        let total_len = serialized_data.len();
+        if total_len > self.max_message_size() {
+            return Err(MessengerError::MessageTooLarge(total_len, self.max_message_size()));
         }
-
-        // Prepare the message in a separate block to limit the lifetime of buffer_ptr
-        let prepared_message = {
-            let mut buffer_ptr = self.buffer_pool.allocate();
-            let buffer = unsafe { buffer_ptr.as_mut() };
-
-            if buffer.len() < total_len {
-                buffer.resize(total_len, 0);
-            }
-
-            // Write topic length
-            buffer[0..4].copy_from_slice(&(topic.len() as u32).to_le_bytes());
-            // Write topic
-            buffer[4..4 + topic.len()].copy_from_slice(&topic);
-            // Write payload length
-            buffer[4 + topic.len()..8 + topic.len()].copy_from_slice(&(payload.len() as u32).to_le_bytes());
-            // Write payload
-            buffer[8 + topic.len()..].copy_from_slice(payload);
-
-            let prepared = buffer[..total_len].to_vec();
-            self.buffer_pool.deallocate(buffer_ptr);
-            prepared
-        };
 
         let mut shmem = self.shmem.write().await;
-        let offset = self.queue.len() * max_message_size;
-
-        if offset + total_len > shmem.len() {
-            shmem.resize(offset + total_len, 0);
-        }
-
-        shmem[offset..offset + total_len].copy_from_slice(&prepared_message);
-        self.queue.push((offset, total_len));
-
+        
+        // Write length prefix and serialized data
+        let mut buffer = vec![0u8; 4 + total_len];
+        buffer[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        buffer[4..].copy_from_slice(&serialized_data);
+        
+        // Write to shared memory
+        shmem[..buffer.len()].copy_from_slice(&buffer);
+        
+        // Push to queue
+        self.queue.push(total_len);
+        
         Ok(())
     }
 
     async fn receive(&self) -> Result<Message, MessengerError> {
-        if let Some((offset, len)) = self.queue.pop() {
+        if let Some(msg_len) = self.queue.pop() {
             let shmem = self.shmem.read().await;
-            let data = shmem[offset..offset + len].to_vec();
             
-            // Deserialize the data into a Message
-            let topic_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-            let topic = data[4..4 + topic_len].to_vec();
-            let payload_len = u32::from_le_bytes([data[4 + topic_len], data[5 + topic_len], data[6 + topic_len], data[7 + topic_len]]) as usize;
-            let payload = data[8 + topic_len..8 + topic_len + payload_len].to_vec();
-
-            Ok(Message {
-                topic: String::from_utf8(topic).map_err(|_| MessengerError::Deserialization("Invalid UTF-8 in topic".to_string()))?,
-                payload,
-                id: String::new(), // or generate a unique id
-            })
+            // Read length and serialized data
+            let mut buffer = vec![0u8; msg_len];
+            buffer.copy_from_slice(&shmem[4..4 + msg_len]);
+            
+            // Deserialize using configured serializer
+            self.serializer.deserialize(&buffer)
+                .map_err(|e| MessengerError::Deserialization(e.to_string()))
         } else {
             Err(MessengerError::NoMessagesAvailable)
         }
     }
 
-  async fn cleanup(&self) -> Result<(), MessengerError> {
+    async fn cleanup(&self) -> Result<(), MessengerError> {
         let mut shmem = self.shmem.write().await;
         shmem.fill(0);
         while self.queue.pop().is_some() {}
@@ -131,10 +104,18 @@ impl Transport for IpcTransport {
     fn max_message_size(&self) -> usize {
         self.config.max_message_size
     }
+
+    async fn close(&self) -> Result<(), Box<dyn std::error::Error + 'static>> {
+        self.cleanup().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+    }
 }
 
 impl IpcTransport {
-    pub fn new(config: IpcConfig, serializer: Box<dyn Serializer>, buffer_pool: PoolAllocator<Vec<u8>>) -> Result<Self, MessengerError> {
+    pub fn new(
+        config: IpcConfig,
+        serializer: Box<dyn Serializer>,
+        buffer_pool: PoolAllocator<Vec<u8>>,
+    ) -> Result<Self, MessengerError> {
         let shmem_size = config.max_message_size * config.max_queue_size;
         Ok(Self {
             shmem: RwLock::new(vec![0; shmem_size]),
@@ -143,6 +124,24 @@ impl IpcTransport {
             serializer,
             buffer_pool,
         })
+    }
+
+    fn find_next_free_slot(&self, max_size: usize) -> usize {
+        let mut used_slots = vec![false; self.config.max_queue_size];
+        let mut temp_storage = Vec::new();
+        
+        // Pop items, mark slots, and store temporarily
+        while let Some(len) = self.queue.pop() {
+            used_slots[len / max_size] = true;
+            temp_storage.push(len);
+        }
+        
+        // Push items back
+        for item in temp_storage {
+            self.queue.push(item);
+        }
+        
+        used_slots.iter().position(|&used| !used).unwrap_or(0)
     }
 }
 

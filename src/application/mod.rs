@@ -24,3 +24,4 @@
 
 pub mod messenger;
 pub mod config;
+pub mod instance_manager;

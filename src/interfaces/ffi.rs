@@ -36,24 +36,22 @@ use crate::infrastructure::serialization::json::JsonSerializer;
 use crate::infrastructure::transport::ipc::IpcTransport;
 use crate::infrastructure::transport::tcp::TcpTransport;
 use crate::infrastructure::transport::Transport;
+use crate::application::instance_manager::INSTANCE_MANAGER;
 
 lazy_static! {
     static ref RUNTIME: Runtime = Runtime::new().expect("Failed to create Tokio runtime");
-    static ref MESSENGER_MUTEX: Arc<Mutex<AtomicBool>> = Arc::new(Mutex::new(AtomicBool::new(false)));
+    static ref MESSENGER_MUTEX: Mutex<AtomicBool> = Mutex::new(AtomicBool::new(false));
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_init(config: *const Config) -> *mut c_void {
-    let mutex = MESSENGER_MUTEX.clone();
-
-    if mutex.lock().expect("Failed to acquire lock").load(Ordering::SeqCst) {
-        return std::ptr::null_mut();
+    if let Some(existing) = INSTANCE_MANAGER.get_messenger() {
+        INSTANCE_MANAGER.register_instance();
+        return existing;
     }
 
-    mutex.lock().expect("Failed to acquire lock").store(true, Ordering::SeqCst);
-
     let config = unsafe { &*config };
-
+    // Create transport and messenger as before
     let transport: Arc<dyn Transport> = match config.transport_type {
         TransportType::IPC => {
             let ipc_config = config.ipc_config.as_ref().expect("IPC config not provided");
@@ -70,22 +68,33 @@ pub extern "C" fn zark_messenger_init(config: *const Config) -> *mut c_void {
     };
 
     let messenger: Box<dyn Messenger> = Box::new(MessengerImpl::new(transport));
-    Box::into_raw(messenger) as *mut c_void
-
+    let messenger_ptr = Box::into_raw(messenger) as *mut c_void;
+    
+    INSTANCE_MANAGER.set_messenger(messenger_ptr);
+    INSTANCE_MANAGER.register_instance();
+    
+    messenger_ptr
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_send(messenger_param: *mut c_void, message: *const Message) -> bool {
+    if messenger_param.is_null() {
+        eprintln!("Messenger pointer is null");
+        return false;
+    }
+    if message.is_null() {
+        eprintln!("Message pointer is null");
+        return false;
+    }
 
-    //transmute the messenger to the correct type, it appears only way casting c_void to my local messenger type
     let messenger = unsafe { &*(messenger_param as *mut MessengerImpl) as &dyn Messenger };
     let message = unsafe { &*message };
 
     RUNTIME.block_on(async {
-        unsafe { (*messenger).publish(message.topic.clone(), message).await.is_ok() }
+        messenger.publish(message.topic.clone(), message).await.is_ok()
     })
-
 }
+
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_receive(
@@ -95,8 +104,6 @@ pub extern "C" fn zark_messenger_receive(
     buffer: *mut c_char,
     buffer_len: usize,
 ) -> i32 {
-
-    //
     let messenger = unsafe { &*(messenger_param as *mut MessengerImpl) as &dyn Messenger };
 
     RUNTIME.block_on(async {
@@ -130,16 +137,23 @@ pub extern "C" fn zark_messenger_receive(
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_cleanup(messenger: *mut c_void) {
-    // Perform any necessary cleanup here
-    // For now, this is a no-op
+    if messenger.is_null() {
+        return;
+    }
+
+    let messenger = unsafe { &*(messenger as *mut MessengerImpl) as &dyn Messenger };
+    RUNTIME.block_on(async {
+        let _ = messenger.cleanup().await;
+    });
 }
 
 #[no_mangle]
 pub extern "C" fn zark_messenger_free(messenger: *mut c_void) {
-    unsafe {
-        let _ = Box::from_raw(messenger as *mut Box<dyn Messenger>);
+    if messenger.is_null() {
+        return;
     }
-    MESSENGER_MUTEX.lock().expect("Failed to acquire lock").store(false, Ordering::SeqCst);
+
+    INSTANCE_MANAGER.unregister_instance();
 }
 
 // Helper function to convert C string to Rust string

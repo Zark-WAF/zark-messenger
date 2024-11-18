@@ -50,83 +50,46 @@ pub struct TcpTransport {
 impl Transport for TcpTransport {
     // send a message over tcp
     async fn send(&self, message: &Message) -> Result<(), MessengerError> {
-        let topic = message.topic.as_bytes();
-        let payload = &message.payload;
-
-        // Calculate total message length: 4 bytes for topic length + topic + 4 bytes for payload length + payload
-        let total_len = 4 + topic.len() + 4 + payload.len();
-
-        // Convert total length to big-endian bytes
-        let len_bytes = (total_len as u32).to_be_bytes();
-
-        // If we have an active stream
         if let Some(stream) = &self.stream {
             let mut stream = stream.lock().await;
+            
+            // Serialize the message using the configured serializer
+            let serialized_payload = self.serializer.serialize(message)
+                .map_err(|e| MessengerError::Serialization(e.to_string()))?;
+            
+            let total_len = serialized_payload.len();
+            if total_len > self.max_message_size() {
+                return Err(MessengerError::MessageTooLarge(total_len, self.max_message_size()));
+            }
 
-            // Write the total message length
-            stream.write_all(&len_bytes).await?;
-
-            // Write the topic length
-            stream
-                .write_all(&(topic.len() as u32).to_be_bytes())
-                .await?;
-
-            // Write the topic
-            stream.write_all(topic).await?;
-
-            // Write the payload length
-            stream
-                .write_all(&(payload.len() as u32).to_be_bytes())
-                .await?;
-
-            // Write the payload
-            stream.write_all(payload).await?;
-
-            // Ensure all data is sent
+            // Write length prefix and serialized data
+            stream.write_all(&(total_len as u32).to_be_bytes()).await?;
+            stream.write_all(&serialized_payload).await?;
             stream.flush().await?;
+            
             Ok(())
         } else {
             Err(MessengerError::TransportError("Not connected".into()))
         }
     }
 
-
     // receive a message over tcp
     async fn receive(&self) -> Result<Message, MessengerError> {
         if let Some(stream) = &self.stream {
             let mut stream = stream.lock().await;
 
-            // Read total message length
+            // Read message length
             let mut len_bytes = [0u8; 4];
             stream.read_exact(&mut len_bytes).await?;
-            let total_len = u32::from_be_bytes(len_bytes) as usize;
+            let msg_len = u32::from_be_bytes(len_bytes) as usize;
 
-            // Read topic length
-            let mut topic_len_bytes = [0u8; 4];
-            stream.read_exact(&mut topic_len_bytes).await?;
-            let topic_len = u32::from_be_bytes(topic_len_bytes) as usize;
+            // Read serialized message
+            let mut buffer = vec![0u8; msg_len];
+            stream.read_exact(&mut buffer).await?;
 
-            // Read topic
-            let mut topic_buffer = vec![0u8; topic_len];
-            stream.read_exact(&mut topic_buffer).await?;
-            let topic = String::from_utf8(topic_buffer).map_err(|_| {
-                MessengerError::Deserialization("Invalid UTF-8 in topic".to_string())
-            })?;
-
-            // Read payload length
-            let mut payload_len_bytes = [0u8; 4];
-            stream.read_exact(&mut payload_len_bytes).await?;
-            let payload_len = u32::from_be_bytes(payload_len_bytes) as usize;
-
-            // Read payload
-            let mut payload = vec![0u8; payload_len];
-            stream.read_exact(&mut payload).await?;
-
-            Ok(Message {
-                topic,
-                payload,
-                id: String::new(), // or generate a unique id
-            })
+            // Deserialize using the configured serializer
+            self.serializer.deserialize(&buffer)
+                .map_err(|e| MessengerError::Deserialization(e.to_string()))
         } else {
             Err(MessengerError::TransportError("Not connected".into()))
         }
@@ -152,6 +115,10 @@ impl Transport for TcpTransport {
     // get the max message size
     fn max_message_size(&self) -> usize {
         self.config.max_message_size
+    }
+
+    async fn close(&self) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
     }
 }
 

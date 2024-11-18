@@ -52,4 +52,7 @@ pub trait Transport: Send + Sync {
 
     /// Get the maximum message size supported by this transport
     fn max_message_size(&self) -> usize;
+
+    /// Close the transport
+    async fn close(&self) -> Result<(), Box<dyn std::error::Error>>;
 }

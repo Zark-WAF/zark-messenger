@@ -15,7 +15,6 @@ pub use crate::domain::errors::MessengerError;
 pub use crate::application::config::{IpcConfig, TransportType};
 pub use crate::domain::message::Message;
 
-use shared_memory::Shmem;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a Config struct
