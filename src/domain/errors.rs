@@ -31,6 +31,7 @@ pub enum MessengerError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
     #[error("Deserialization error: {0}")]
     Deserialization(String),
 
@@ -49,4 +50,12 @@ pub enum MessengerError {
     #[error("No messages available")]
     NoMessagesAvailable,
 
+    #[error("Got a memory overflow")]
+    MemoryOverflow,
+
+    #[error("No free memory slots")]
+    NoFreeSlots,
+
+    #[error("Channel Closed")]
+    ChannelClosed,
 }

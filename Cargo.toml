@@ -26,8 +26,6 @@ windows = { version = "0.48", features = ["Win32_System_Memory", "Win32_Foundati
 lazy_static = "1.4.0"
 shm = "0.1.0"
 
-
-
 [lib]
 name = "zark_waf_messenger"
 crate-type = ["cdylib"]

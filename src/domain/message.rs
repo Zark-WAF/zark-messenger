@@ -26,7 +26,7 @@ use serde::{Serialize, Deserialize};
 use crate::utils::zark_uid::generate_zark_uid;
 
 
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 /// message struct represents a single message in the messaging system
 pub struct Message {
     /// topic is used to categorize and route messages to appropriate recipients

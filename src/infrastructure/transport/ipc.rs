@@ -1,42 +1,18 @@
-// MIT License
-//
-// Copyright (c) 2024 ZARK-WAF
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-//
-// Authors: I. Zeqiri, E. Gjergji
-
 use super::Transport;
 use crate::application::config::IpcConfig;
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
 use crate::infrastructure::memory::pool_allocator::PoolAllocator;
 use crate::infrastructure::serialization::Serializer;
-use std::sync::Arc;
 
 use async_trait::async_trait;
-use crossbeam::queue::SegQueue;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex, mpsc};
 
 pub struct IpcTransport {
-    shmem: RwLock<Vec<u8>>,
-    queue: Arc<SegQueue<usize>>,
+    shmem: RwLock<Vec<u8>>,                   // Shared memory buffer
+    slots: Mutex<Vec<bool>>,                  // Bitmap for free/used slots
+    tx: mpsc::Sender<usize>,                  // Sender for slot indices
+    rx: Mutex<Option<mpsc::Receiver<usize>>>, // Receiver for slot indices
     config: IpcConfig,
     serializer: Box<dyn Serializer>,
     buffer_pool: PoolAllocator<Vec<u8>>,
@@ -54,42 +30,95 @@ impl Transport for IpcTransport {
             return Err(MessengerError::MessageTooLarge(total_len, self.max_message_size()));
         }
 
+        // Find and mark a free slot atomically
+        let slot_index = self.find_and_mark_next_free_slot().await?;
+
+        // Proceed to write to shared memory
         let mut shmem = self.shmem.write().await;
-        
+
+        let start = slot_index * self.config.max_message_size;
+        let end = start + total_len + 4; // 4 bytes for length prefix
+
+        if end > shmem.len() {
+            // Free the slot before returning
+            self.free_slot(slot_index).await;
+            return Err(MessengerError::MemoryOverflow);
+        }
+
         // Write length prefix and serialized data
-        let mut buffer = vec![0u8; 4 + total_len];
-        buffer[..4].copy_from_slice(&(total_len as u32).to_be_bytes());
-        buffer[4..].copy_from_slice(&serialized_data);
-        
-        // Write to shared memory
-        shmem[..buffer.len()].copy_from_slice(&buffer);
-        
-        // Push to queue
-        self.queue.push(total_len);
-        
+        shmem[start..start + 4].copy_from_slice(&(total_len as u32).to_be_bytes());
+        shmem[start + 4..end].copy_from_slice(&serialized_data);
+
+        // Push the slot index to the channel
+        self.tx.send(slot_index).await.map_err(|_| MessengerError::ChannelClosed)?;
+
         Ok(())
     }
 
     async fn receive(&self) -> Result<Message, MessengerError> {
-        if let Some(msg_len) = self.queue.pop() {
-            let shmem = self.shmem.read().await;
-            
-            // Read length and serialized data
-            let mut buffer = vec![0u8; msg_len];
-            buffer.copy_from_slice(&shmem[4..4 + msg_len]);
-            
-            // Deserialize using configured serializer
-            self.serializer.deserialize(&buffer)
-                .map_err(|e| MessengerError::Deserialization(e.to_string()))
-        } else {
-            Err(MessengerError::NoMessagesAvailable)
+        // Wait for a slot index from the channel
+        let slot_index = {
+            let mut rx_lock = self.rx.lock().await;
+    
+            // If the Receiver has been dropped, return an error
+            if rx_lock.is_none() {
+                return Err(MessengerError::ChannelClosed);
+            }
+    
+            let rx = rx_lock.as_mut().unwrap();
+    
+            match rx.recv().await {
+                Some(index) => index,
+                None => {
+                    // The channel is closed
+                    return Err(MessengerError::ChannelClosed);
+                }
+            }
+        };
+
+        let shmem = self.shmem.read().await;
+
+        let start = slot_index * self.config.max_message_size;
+        let len_bytes = &shmem[start..start + 4];
+        let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
+        let end = start + 4 + len;
+
+        if end > shmem.len() {
+            // Free the slot before returning
+            self.free_slot(slot_index).await;
+            return Err(MessengerError::MemoryOverflow);
         }
+
+        // Read and deserialize data
+        let serialized_data = &shmem[start + 4..end];
+        let message = self.serializer.deserialize(serialized_data)
+            .map_err(|e| MessengerError::Deserialization(e.to_string()))?;
+
+        // Free the slot
+        self.free_slot(slot_index).await;
+
+        Ok(message)
     }
 
     async fn cleanup(&self) -> Result<(), MessengerError> {
         let mut shmem = self.shmem.write().await;
         shmem.fill(0);
-        while self.queue.pop().is_some() {}
+
+        {
+            let mut slots = self.slots.lock().await;
+            for slot in slots.iter_mut() {
+                *slot = false;
+            }
+        }
+
+        {
+            let mut rx_lock = self.rx.lock().await;
+            *rx_lock = None;
+        }
+
+        // Close the channel
+        drop(self.tx.clone());
+
         Ok(())
     }
 
@@ -117,33 +146,35 @@ impl IpcTransport {
         buffer_pool: PoolAllocator<Vec<u8>>,
     ) -> Result<Self, MessengerError> {
         let shmem_size = config.max_message_size * config.max_queue_size;
+        let slots = vec![false; config.max_queue_size]; // Initially, all slots are free
+
+        let (tx, rx) = mpsc::channel(config.max_queue_size);
+
         Ok(Self {
             shmem: RwLock::new(vec![0; shmem_size]),
-            queue: Arc::new(SegQueue::new()),
+            slots: Mutex::new(slots),
+            tx,
+            rx: Mutex::new(Some(rx)),
             config,
             serializer,
             buffer_pool,
         })
     }
 
-    fn find_next_free_slot(&self, max_size: usize) -> usize {
-        let mut used_slots = vec![false; self.config.max_queue_size];
-        let mut temp_storage = Vec::new();
-        
-        // Pop items, mark slots, and store temporarily
-        while let Some(len) = self.queue.pop() {
-            used_slots[len / max_size] = true;
-            temp_storage.push(len);
+    /// Finds and marks the next available free slot atomically
+    async fn find_and_mark_next_free_slot(&self) -> Result<usize, MessengerError> {
+        let mut slots = self.slots.lock().await;
+        if let Some(index) = slots.iter().position(|&slot| !slot) {
+            slots[index] = true; // Mark as used while holding the lock
+            Ok(index)
+        } else {
+            Err(MessengerError::NoFreeSlots)
         }
-        
-        // Push items back
-        for item in temp_storage {
-            self.queue.push(item);
-        }
-        
-        used_slots.iter().position(|&used| !used).unwrap_or(0)
+    }
+
+    /// Frees the slot at the given index
+    async fn free_slot(&self, slot_index: usize) {
+        let mut slots = self.slots.lock().await;
+        slots[slot_index] = false;
     }
 }
-
-unsafe impl Send for IpcTransport {}
-unsafe impl Sync for IpcTransport {}
