@@ -22,7 +22,6 @@
 //
 // Authors: I. Zeqiri, E. Gjergji
 
-use serde::{Deserialize, Serialize};
 use crate::domain::errors::MessengerError;
 use crate::domain::message::Message;
 

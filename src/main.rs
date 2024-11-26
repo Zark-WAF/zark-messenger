@@ -11,6 +11,7 @@ use tokio::task;
 
 use crate::application::config::IpcConfig;
 use crate::domain::message::Message;
+use crate::domain::errors::MessengerError;
 use crate::infrastructure::serialization::json::JsonSerializer;
 use crate::infrastructure::memory::pool_allocator::PoolAllocator;
 use crate::infrastructure::transport::ipc::IpcTransport;
@@ -21,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ipc_config = IpcConfig {
         shared_memory_name: "zark_waf_messenger_shm".to_string(),
         max_message_size: 1024,
-        max_queue_size: 10000,
+        max_queue_size: 1000,
         max_buffer_size: 1024,
     };
 
@@ -38,8 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?);
 
     // Number of concurrent tasks
-    let num_tasks = 100;
-    let messages_per_task = 100;
+    let num_tasks = 10;
+    let messages_per_task = 10;
 
     // A barrier to synchronize the start of all tasks
     let barrier = Arc::new(Barrier::new(num_tasks * 2));
@@ -97,9 +98,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut received = received_messages.lock().await;
                         received.push(message);
                     }
+                    Err(MessengerError::ChannelClosed) => {
+                        // The channel is closed, exit the loop
+                        break;
+                    }
                     Err(e) => {
                         eprintln!("Receive error: {:?}", e);
-                        // Handle the error appropriately
+                        // Handle other errors as appropriate
                     }
                 }
             }

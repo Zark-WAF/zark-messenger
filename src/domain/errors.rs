@@ -58,4 +58,10 @@ pub enum MessengerError {
 
     #[error("Channel Closed")]
     ChannelClosed,
+
+    #[error("Message not found in channel")]
+    MessageNotFound,
+
+    #[error("You sucked all memory, there is left no more")]
+    MemoryUnavailable
 }
